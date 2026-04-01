@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BTC交易机器人监控面板</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        .card { background: #ffffff; border: 1px solid #e5e7eb; }
+        .pulse { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        #klineCanvas { cursor: crosshair; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-900">
+    <div class="h-screen flex flex-col">
+        <!-- 顶部栏 -->
+        <header class="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
+            <div class="flex items-center gap-6">
+                <h1 class="text-xl font-bold">BTC Trading Bot</h1>
+                <div class="flex items-center gap-4 text-sm">
+                    <div class="flex items-center gap-2">
+                        <span class="text-gray-500">BTC/USDT</span>
+                        <span id="currentPrice" class="mono font-semibold text-lg">$0.00</span>
+                        <span id="priceChange" class="mono text-sm">+0.00%</span>
+                    </div>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <div id="statusBadge" class="px-3 py-1 rounded text-xs font-medium bg-gray-200 text-gray-700">
+                    <span class="pulse">●</span> 未启动
+                </div>
+                <button onclick="showDecisionModal()" class="px-4 py-1.5 bg-purple-600 text-white rounded text-sm font-medium hover:bg-purple-700">
+                    决策记录
+                </button>
+                <button id="toggleBtn" onclick="toggleBot()" class="px-4 py-1.5 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">
+                    启动
+                </button>
+            </div>
+        </header>
+
+        <!-- 主内容区 -->
+        <div class="flex-1 flex overflow-hidden">
+            <!-- 左侧：图表和交易记录 -->
+            <div class="flex-1 flex flex-col p-4 gap-4 overflow-auto">
+                <!-- 价格走势图 -->
+                <div class="card rounded-lg p-4" style="height: 400px;">
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="text-sm font-semibold text-gray-700">K线图 (1分钟) - 支持缩放拖拽</h3>
+                        <div class="flex items-center gap-3 text-xs text-gray-500">
+                            <span>滚轮缩放</span>
+                            <span>拖拽平移</span>
+                            <span class="flex items-center gap-1">
+                                <span class="w-3 h-3 bg-green-500 rounded-sm"></span> 涨
+                            </span>
+                            <span class="flex items-center gap-1">
+                                <span class="w-3 h-3 bg-red-500 rounded-sm"></span> 跌
+                            </span>
+                        </div>
+                    </div>
+                    <div style="position: relative; width: 100%; height: 340px;">
+                        <canvas id="klineCanvas" style="width: 100%; height: 100%;"></canvas>
+                        <div id="tooltip" style="position: absolute; display: none; background: rgba(0,0,0,0.85); color: white; padding: 10px 14px; border-radius: 4px; font-size: 12px; pointer-events: none; z-index: 1000; line-height: 1.6;"></div>
+                        <div id="priceLabel" style="position: absolute; right: 60px; display: none; background: #3B82F6; color: white; padding: 2px 8px; border-radius: 2px; font-size: 11px; font-family: 'JetBrains Mono', monospace; pointer-events: none; z-index: 999;"></div>
+                    </div>
+                </div>
+
+                <!-- 交易记录 -->
+                <div class="card rounded-lg p-4 flex-1 overflow-auto">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-sm font-semibold text-gray-700">交易记录</h3>
+                        <div class="flex items-center gap-4 text-xs">
+                            <span class="text-gray-500">总交易: <span id="totalTrades" class="font-medium text-gray-700">0</span></span>
+                            <span class="text-gray-500">胜率: <span id="winRate" class="font-medium text-gray-700">0%</span></span>
+                            <span class="text-gray-500">总盈亏: <span id="totalPnl" class="font-medium">$0.00</span></span>
+                        </div>
+                    </div>
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr class="text-left text-gray-500 border-b border-gray-200">
+                                <th class="pb-2 font-medium">时间</th>
+                                <th class="pb-2 font-medium">类型</th>
+                                <th class="pb-2 font-medium">入场价</th>
+                                <th class="pb-2 font-medium">出场价</th>
+                                <th class="pb-2 font-medium">数量</th>
+                                <th class="pb-2 font-medium">盈亏</th>
+                                <th class="pb-2 font-medium">余额</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tradeHistory">
+                            <tr><td colspan="7" class="text-center text-gray-400 py-3">暂无交易记录</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 右侧：信息面板 -->
+            <div class="w-80 bg-white border-l border-gray-200 p-4 overflow-y-auto">
+                <!-- 账户信息 -->
+                <div class="mb-4 pb-4 border-b border-gray-200">
+                    <h3 class="text-xs font-semibold text-gray-500 mb-3 uppercase">模拟账户</h3>
+                    <div class="space-y-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-gray-600">余额</span>
+                            <span id="balance" class="mono text-lg font-semibold">$10,000.00</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class=";text-xs text-gray-600">未实现盈亏</span>
+                            <span id="unrealizedPnl" class="mono text-sm font-semibold">$0.00</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-gray-600">已实现盈亏</span>
+                            <span id="realizedPnl" class="mono text-sm font-semibold">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 当前信号 -->
+                <div class="mb-4 pb-4 border-b border-gray-200">
+                    <h3 class="text-xs font-semibold text-gray-500 mb-3 uppercase">当前信号</h3>
+                    <div class="flex items-center justify-between mb-2">
+                        <span id="signalType" class="text-3xl font-bold">HOLD</span>
+                        <span id="signalConfidence" class="text-xs px-2 py-1 rounded bg-gray-200">-</span>
+                    </div>
+                    <p id="signalReason" class="text-xs text-gray-600 mt-2">等待分析...</p>
+                </div>
+
+                <!-- 持仓信息 -->
+                <div class="mb-4 pb-4 border-b border-gray-200">
+                    <h3 class="text-xs font-semibold text-gray-500 mb-3 uppercase">持仓</h3>
+                    <div class="space-y-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-gray-600">方向</span>
+                            <span id="positionInfo" class="text-sm font-medium">无持仓</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-gray-600">入场价</span>
+                            <span id="entryPrice" class="mono text-sm">-</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-gray-600">数量</span>
+                            <span id="positionAmount" class="mono text-sm">-</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-gray-600">持仓成本</span>
+                            <span id="positionCost" class="mono text-sm font-medium">-</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-gray-600">保证金</span>
+                            <span id="margin" class="mono text-sm">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 技术指标 -->
+                <div class="mb-4 pb-4 border-b border-gray-200">
+                    <h3 class="text-xs font-semibold text-gray-500 mb-3 uppercase">技术指标</h3>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="bg-gray-50 rounded p-2">
+                            <p class="text-xs text-gray-500">RSI</p>
+                            <p id="rsiValue" class="mono text-sm font-semibold">-</p>
+                        </div>
+                        <div class="bg-gray-50 rounded p-2">
+                            <p class="text-xs text-gray-500">MACD</p>
+                            <p id="macdValue" class="mono text-sm font-semibold">-</p>
+                        </div>
+                        <div class="bg-gray-50 rounded p-2">
+                            <p class="text-xs text-gray-500">布林带</p>
+                            <p id="bbValue" class="mono text-sm font-semibold">-</p>
+                        </div>
+                        <div class="bg-gray-50 rounded p-2">
+                            <p class="text-xs text-gray-500">量比</p>
+                            <p id="volumeValue" class="mono text-sm font-semibold">-</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 配置信息 -->
+                <div>
+                    <h3 class="text-xs font-semibold text-gray-500 mb-3 uppercase">配置</h3>
+                    <div id="configInfo" class="space-y-2 text-xs">
+                        <p class="text-gray-400">加载中...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 左下角模型显示 -->
+    <div id="modelBadge" class="fixed bottom-4 left-4 bg-white border border-gray-300 rounded-lg px-3 py-2 shadow-lg text-xs z-50">
+        <span class="text-gray-500">当前模型:</span>
+        <span id="modelName" class="font-semibold text-gray-700 ml-1">-</span>
+    </div>
+
+    <!-- 密码输入弹窗 -->
+    <div id="passwordModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-80">
+            <h3 class="text-lg font-semibold mb-4">请输入密码</h3>
+            <input type="password" id="passwordInput" class="w-full px-3 py-2 border border-gray-300 rounded mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="密码">
+            <div class="flex gap-3">
+                <button onclick="closePasswordModal()" class="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">取消</button>
+                <button onclick="confirmPassword()" class="flex-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 决策记录弹窗 -->
+    <div id="decisionModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white rounded-lg w-4/5 max-w-5xl max-h-[80vh] flex flex-col">
+            <div class="flex items-center justify-between p-4 border-b border-gray-200">
+                <h2 class="text-lg font-semibold">AI决策记录</h2>
+                <button onclick="closeDecisionModal()" class="text-gray-400 hover:text-gray-600">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            <div id="decisionContent" class="flex-1 overflow-auto p-4">
+                <div class="text-center text-gray-400 py-8">加载中...</div>
+            </div>
+            <div id="decisionPagination" class="flex items-center justify-between p-4 border-t border-gray-200">
+                <div class="text-sm text-gray-500">
+                    共 <span id="totalDecisions">0</span> 条记录
+                </div>
+                <div class="flex items-center gap-2">
+                    <button id="prevPageBtn" onclick="prevPage()" class="px-3 py-1 bg-gray-200 text-gray-700 rounded text-sm hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed">
+                        上一页
+                    </button>
+                    <span class="text-sm text-gray-600">
+                        第 <span id="currentPage">1</span> / <span id="totalPages">1</span> 页
+                    </span>
+                    <button id="nextPageBtn" onclick="nextPage()" class="px-3 py-1 bg-gray-200 text-gray-700 rounded text-sm hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed">
+                        下一页
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // K线图状态
+        let klineData = [];
+        let isRunning = false;
+        let viewState = {
+            offset: 0,           // 偏移量（从右侧开始）
+            visibleBars: 60,     // 可见K线数量
+            isDragging: false,
+            lastX: 0,
+            lastOffset: 0
+        };
+        
+        const canvas = document.getElementById('klineCanvas');
+        const ctx = canvas.getContext('2d');
+        const tooltip = document.getElementById('tooltip');
+        const priceLabel = document.getElementById('priceLabel');
+        
+        // 初始化Canvas
+        function initCanvas() {
+            const rect = canvas.getBoundingClientRect();
+            canvas.width = rect.width * window.devicePixelRatio;
+            canvas.height = rect.height * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+        
+        // 绘制K线图
+        function drawKlineChart() {
+            initCanvas();
+            
+            const rect = canvas.getBoundingClientRect();
+            const width = rect.width;
+            const height = rect.height;
+            
+            // 清空画布
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, width, height);
+            
+            if (klineData.length === 0) {
+                ctx.fillStyle = '#9CA3AF';
+                ctx.font = '14px Inter';
+                ctx.textAlign = 'center';
+                ctx.fillText('暂无数据', width / 2, height / 2);
+                return;
+            }
+            
+            // 获取可见数据
+            const startIdx = Math.max(0, klineData.length - viewState.visibleBars - viewState.offset);
+            const endIdx = Math.min(klineData.length, klineData.length - viewState.offset);
+            const visibleData = klineData.slice(startIdx, endIdx);
+            
+            if (visibleData.length === 0) return;
+            
+            // 计算价格范围
+            const prices = visibleData.flatMap(d => [d.high, d.low]);
+            let minPrice = Math.min(...prices);
+            let maxPrice = Math.max(...prices);
+            const priceRange = (maxPrice - minPrice) || 1;
+            const padding = priceRange * 0.1;
+            minPrice -= padding;
+            maxPrice += padding;
+            const adjustedRange = maxPrice - minPrice;
+            
+            // 绘制参数
+            const chartPadding = { top: 20, right: 60, bottom: 30, left: 10 };
+            const chartWidth = width - chartPadding.left - chartPadding.right;
+            const chartHeight = height - chartPadding.top - chartPadding.bottom;
+            const candleWidth = Math.max(3, (chartWidth / visibleData.length) * 0.8);
+            const candleGap = (chartWidth - candleWidth * visibleData.length) / (visibleData.length - 1 || 1);
+            
+            // 绘制网格线和价格标签
+            ctx.strokeStyle = '#F3F4F6';
+            ctx.lineWidth = 1;
+            ctx.fillStyle = '#9CA3AF';
+            ctx.font = '10px JetBrains Mono';
+            ctx.textAlign = 'right';
+            
+            for (let i = 0; i <= 5; i++) {
+                const y = chartPadding.top + (chartHeight / 5) * i;
+                ctx.beginPath();
+                ctx.moveTo(chartPadding.left, y);
+                ctx.lineTo(width - chartPadding.right, y);
+                ctx.stroke();
+                
+                const price = maxPrice - (adjustedRange / 5) * i;
+                ctx.fillText('$' + price.toFixed(0), width - 5, y + 3);
+            }
+            
+            // 绘制K线
+            visibleData.forEach((kline, i) => {
+                const x = chartPadding.left + i * (candleWidth + candleGap);
+                const isUp = kline.close >= kline.open;
+                const color = isUp ? '#10B981' : '#EF4444';
+                
+                const openY = chartPadding.top + ((maxPrice - kline.open) / adjustedRange) * chartHeight;
+                const closeY = chartPadding.top + ((maxPrice - kline.close) / adjustedRange) * chartHeight;
+                const highY = chartPadding.top + ((maxPrice - kline.high) / adjustedRange) * chartHeight;
+                const lowY = chartPadding.top + ((maxPrice - kline.low) / adjustedRange) * chartHeight;
+                
+                // 影线
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(x + candleWidth / 2, highY);
+                ctx.lineTo(x + candleWidth / 2, lowY);
+                ctx.stroke();
+                
+                // 实体
+                ctx.fillStyle = color;
+                const bodyTop = Math.min(openY, closeY);
+                const bodyHeight = Math.max(1, Math.abs(closeY - openY));
+                ctx.fillRect(x, bodyTop, candleWidth, bodyHeight);
+            });
+            
+            // 时间标签
+            const labelCount = Math.min(8, visibleData.length);
+            ctx.fillStyle = '#9CA3AF';
+            ctx.font = '9px Inter';
+            ctx.textAlign = 'center';
+            
+            for (let i = 0; i < labelCount; i++) {
+                const idx = Math.floor(i * (visibleData.length - 1) / Math.max(1, labelCount - 1));
+                const x = chartPadding.left + idx * (candleWidth + candleGap) + candleWidth / 2;
+                const time = visibleData[idx].timestamp.split(' ')[1] || visibleData[idx].timestamp;
+                ctx.fillText(time.substring(0, 5), x, height - 5);
+            }
+        }
+        
+        // 鼠标滚轮缩放
+        canvas.addEventListener('wheel', function(e) {
+            e.preventDefault();
+            
+            const zoomFactor = e.deltaY > 0 ? 1.1 : 0.9;
+            const newVisibleBars = Math.round(viewState.visibleBars * zoomFactor);
+            
+            viewState.visibleBars = Math.max(20, Math.min(200, newVisibleBars));
+            drawKlineChart();
+        });
+        
+        // 鼠标拖拽
+        canvas.addEventListener('mousedown', function(e) {
+            viewState.isDragging = true;
+            viewState.lastX = e.clientX;
+            viewState.lastOffset = viewState.offset;
+            canvas.style.cursor = 'grabbing';
+        });
+        
+        canvas.addEventListener('mousemove', function(e) {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            // 拖拽
+            if (viewState.isDragging) {
+                const deltaX = e.clientX - viewState.lastX;
+                const chartWidth = rect.width - 70;
+                const barWidth = chartWidth / viewState.visibleBars;
+                const offsetChange = Math.round(deltaX / barWidth);
+                viewState.offset = Math.max(0, Math.min(klineData.length - viewState.visibleBars, viewState.lastOffset - offsetChange));
+                drawKlineChart();
+                return;
+            }
+            
+            // Tooltip
+            if (klineData.length === 0) {
+                tooltip.style.display = 'none';
+                priceLabel.style.display = 'none';
+                return;
+            }
+            
+            const chartPadding = { top: 20, right: 60, bottom: 30, left: 10 };
+            const chartWidth = rect.width - chartPadding.left - chartPadding.right;
+            const chartHeight = rect.height - chartPadding.top - chartPadding.bottom;
+            
+            const startIdx = Math.max(0, klineData.length - viewState.visibleBars - viewState.offset);
+            const endIdx = Math.min(klineData.length, klineData.length - viewState.offset);
+            const visibleData = klineData.slice(startIdx, endIdx);
+            
+            if (visibleData.length === 0) return;
+            
+            const candleWidth = Math.max(3, (chartWidth / visibleData.length) * 0.8);
+            const candleGap = (chartWidth - candleWidth * visibleData.length) / (visibleData.length - 1 || 1);
+            const candleIndex = Math.floor((x - chartPadding.left) / (candleWidth + candleGap));
+            
+            if (candleIndex >= 0 && candleIndex < visibleData.length) {
+                const kline = visibleData[candleIndex];
+                const change = ((kline.close - kline.open) / kline.open * 100).toFixed(2);
+                const changeColor = kline.close >= kline.open ? '#10B981' : '#EF4444';
+                
+                tooltip.innerHTML = `
+                    <div style="margin-bottom: 4px; font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 4px;">${kline.timestamp}</div>
+                    <div>开: <span style="color: #60A5FA;">$${kline.open.toFixed(2)}</span></div>
+                    <div>高: <span style="color: #60A5FA;">$${kline.high.toFixed(2)}</span></div>
+                    <div>低: <span style="color: #60A5FA;">$${kline.low.toFixed(2)}</span></div>
+                    <div>收: <span style="color: #60A5FA;">$${kline.close.toFixed(2)}</span></div>
+                    <div style="margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 4px;">
+                        涨跌: <span style="color: ${changeColor}; font-weight: bold;">${change > 0 ? '+' : ''}${change}%</span>
+                    </div>
+                    <div>量: <span style="color: #F59E0B;">${kline.volume.toFixed(2)} BTC</span></div>
+                `;
+                
+                let tooltipX = x + 15;
+                let tooltipY = y - 10;
+                
+                if (tooltipX + 160 > rect.width) tooltipX = x - 160;
+                if (tooltipY + 150 > rect.height) tooltipY = rect.height - 150;
+                if (tooltipY < 0) tooltipY = 10;
+                
+                tooltip.style.left = tooltipX + 'px';
+                tooltip.style.top = tooltipY + 'px';
+                tooltip.style.display = 'block';
+                
+                // 价格标签
+                priceLabel.textContent = '$' + kline.close.toFixed(2);
+                priceLabel.style.top = (y - 10) + 'px';
+                priceLabel.style.display = 'block';
+            } else {
+                tooltip.style.display = 'none';
+                priceLabel.style.display = 'none';
+            }
+        });
+        
+        canvas.addEventListener('mouseup', function() {
+            viewState.isDragging = false;
+            canvas.style.cursor = 'crosshair';
+        });
+        
+        canvas.addEventListener('mouseleave', function() {
+            viewState.isDragging = false;
+            tooltip.style.display = 'none';
+            priceLabel.style.display = 'none';
+            canvas.style.cursor = 'crosshair';
+        });
+
+        let decisionData = [];
+        let decisionPage = 1;
+        const decisionPageSize = 10;
+        
+        function showDecisionModal() {
+            document.getElementById('decisionModal').classList.remove('hidden');
+            document.getElementById('decisionModal').classList.add('flex');
+            loadDecisions();
+        }
+        
+        function closeDecisionModal() {
+            document.getElementById('decisionModal').classList.add('hidden');
+            document.getElementById('decisionModal').classList.remove('flex');
+        }
+        
+        async function loadDecisions() {
+            try {
+                const res = await fetch('/api/signals?limit=1000');
+                const data = await res.json();
+                decisionData = data.signal_history || [];
+                decisionPage = 1;
+                renderDecisions();
+            } catch (error) {
+                console.error('Load decisions error:', error);
+                document.getElementById('decisionContent').innerHTML = '<div class="text-center text-red-500 py-8">加载失败</div>';
+            }
+        }
+        
+        function renderDecisions() {
+            const total = decisionData.length;
+            const totalPages = Math.ceil(total / decisionPageSize) || 1;
+            const startIdx = (decisionPage - 1) * decisionPageSize;
+            const endIdx = Math.min(startIdx + decisionPageSize, total);
+            const pageData = decisionData.slice(startIdx, endIdx);
+            
+            document.getElementById('totalDecisions').textContent = total;
+            document.getElementById('currentPage').textContent = decisionPage;
+            document.getElementById('totalPages').textContent = totalPages;
+            
+            document.getElementById('prevPageBtn').disabled = decisionPage <= 1;
+            document.getElementById('nextPageBtn').disabled = decisionPage >= totalPages;
+            
+            if (pageData.length === 0) {
+                document.getElementById('decisionContent').innerHTML = '<div class="text-center text-gray-400 py-8">暂无决策记录</div>';
+                return;
+            }
+            
+            const html = pageData.map((item, idx) => {
+                const signalColor = item.signal === 'BUY' ? 'bg-green-100 text-green-700' : item.signal === 'SELL' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700';
+                const confColor = item.confidence === 'HIGH' ? 'bg-green-100 text-green-700' : item.confidence === 'MEDIUM' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-700';
+                
+                return `
+                    <div class="border border-gray-200 rounded-lg mb-3 p-4 hover:shadow-md transition-shadow">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="flex items-center gap-3">
+                                <span class="text-sm text-gray-500">${item.timestamp || '-'}</span>
+                                <span class="px-2 py-1 rounded text-sm font-medium ${signalColor}">${item.signal || '-'}</span>
+                                <span class="px-2 py-1 rounded text-xs ${confColor}">${item.confidence || '-'}</span>
+                            </div>
+                            <span class="text-xs text-gray-400">#${total - startIdx - idx}</span>
+                        </div>
+                        <div class="bg-gray-50 rounded p-3 text-sm text-gray-700 leading-relaxed">
+                            ${item.reason || '无详细理由'}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            document.getElementById('decisionContent').innerHTML = html;
+        }
+        
+        function prevPage() {
+            if (decisionPage > 1) {
+                decisionPage--;
+                renderDecisions();
+            }
+        }
+        
+        function nextPage() {
+            const totalPages = Math.ceil(decisionData.length / decisionPageSize) || 1;
+            if (decisionPage < totalPages) {
+                decisionPage++;
+                renderDecisions();
+            }
+        }
+
+        async function fetchData() {
+            try {
+                const [statusRes, marketRes, positionRes, signalsRes, configRes, tradesRes] = await Promise.all([
+                    fetch('/api/status'),
+                    fetch('/api/market'),
+                    fetch('/api/position'),
+                    fetch('/api/signals?limit=20'),
+                    fetch('/api/config'),
+                    fetch('/api/trades?limit=100')
+                ]);
+
+                const status = await statusRes.json();
+                const market = await marketRes.json();
+                const position = await positionRes.json();
+                const signals = await signalsRes.json();
+                const config = await configRes.json();
+                const trades = await tradesRes.json();
+
+                updateUI(status, market, position, signals, config, trades);
+            } catch (error) {
+                console.error('Fetch error:', error);
+            }
+        }
+
+        function updateUI(status, market, position, signals, config, trades) {
+            const statusBadge = document.getElementById('statusBadge');
+            if (status.status === 'running') {
+                statusBadge.innerHTML = '<span class="pulse text-green-500">●</span> 运行中';
+                statusBadge.className = 'px-3 py-1 rounded text-xs font-medium bg-green-100 text-green-700';
+                isRunning = true;
+            } else if (status.status === 'stopped') {
+                statusBadge.innerHTML = '<span class="text-gray-400">●</span> 已停止';
+                statusBadge.className = 'px-3 py-1 rounded text-xs font-medium bg-gray-200 text-gray-700';
+                isRunning = false;
+            } else {
+                statusBadge.innerHTML = '<span class="text-red-500">●</span> 错误';
+                statusBadge.className = 'px-3 py-1 rounded text-xs font-medium bg-red-100 text-red-700';
+            }
+
+            const toggleBtn = document.getElementById('toggleBtn');
+            toggleBtn.textContent = isRunning ? '停止' : '启动';
+            toggleBtn.className = isRunning 
+                ? 'px-4 py-1.5 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700'
+                : 'px-4 py-1.5 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700';
+
+            if (market.current_price) {
+                document.getElementById('currentPrice').textContent = `$${market.current_price.toLocaleString()}`;
+                const change = market.price_change || 0;
+                const changeEl = document.getElementById('priceChange');
+                changeEl.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+                changeEl.className = `mono text-sm ${change >= 0 ? 'text-green-600' : 'text-red-600'}`;
+            }
+
+            // 更新K线图
+            if (market.kline_data && market.kline_data.length > 0) {
+                klineData = market.kline_data;
+                drawKlineChart();
+            }
+
+            // 更新账户余额
+            const balance = position.balance || 10000;
+            document.getElementById('balance').textContent = `$${balance.toFixed(2)}`;
+            
+            const unrealizedPnl = position.unrealized_pnl || 0;
+            document.getElementById('unrealizedPnl').textContent = `$${unrealizedPnl.toFixed(2)}`;
+            document.getElementById('unrealizedPnl').className = `mono text-sm font-semibold ${unrealizedPnl >= 0 ? 'text-green-600' : 'text-red-600'}`;
+            
+            const realizedPnl = position.pnl || 0;
+            document.getElementById('realizedPnl').textContent = `$${realizedPnl.toFixed(2)}`;
+            document.getElementById('realizedPnl').className = `mono text-sm font-semibold ${realizedPnl >= 0 ? 'text-green-600' : 'text-red-600'}`;
+
+            // 更新持仓信息
+            if (position.position) {
+                const sideText = position.position.side === 'long' ? '多仓' : '空仓';
+                document.getElementById('positionInfo').textContent = sideText;
+                document.getElementById('positionInfo').className = `text-sm font-medium ${position.position.side === 'long' ? 'text-green-600' : 'text-red-600'}`;
+                
+                document.getElementById('entryPrice').textContent = `$${position.position.entry_price.toFixed(2)}`;
+                document.getElementById('positionAmount').textContent = position.position.size;
+                
+                const positionCost = position.position.entry_price * position.position.size;
+                document.getElementById('positionCost').textContent = `$${positionCost.toFixed(2)}`;
+                
+                document.getElementById('margin').textContent = `$${position.position.margin.toFixed(2)}`;
+            } else {
+                document.getElementById('positionInfo').textContent = '无持仓';
+                document.getElementById('positionInfo').className = 'text-sm font-medium';
+                document.getElementById('entryPrice').textContent = '-';
+                document.getElementById('positionAmount').textContent = '-';
+                document.getElementById('positionCost').textContent = '-';
+                document.getElementById('margin').textContent = '-';
+            }
+
+            // 更新信号
+            if (signals.latest_signal) {
+                const signal = signals.latest_signal;
+                const signalType = document.getElementById('signalType');
+                signalType.textContent = signal.signal;
+                
+                const signalColor = signal.signal === 'BUY' ? 'text-green-600' : signal.signal === 'SELL' ? 'text-red-600' : 'text-yellow-600';
+                signalType.className = `text-3xl font-bold ${signalColor}`;
+                
+                document.getElementById('signalReason').textContent = signal.reason || '-';
+                
+                const confEl = document.getElementById('signalConfidence');
+                confEl.textContent = signal.confidence || '-';
+                confEl.className = signal.confidence === 'HIGH' 
+                    ? 'text-xs px-2 py-1 rounded bg-green-100 text-green-700'
+                    : signal.confidence === 'MEDIUM'
+                    ? 'text-xs px-2 py-1 rounded bg-yellow-100 text-yellow-700'
+                    : 'text-xs px-2 py-1 rounded bg-gray-200';
+            }
+
+            // 更新技术指标
+            const tech = market.technical_indicators || {};
+            if (tech.rsi) document.getElementById('rsiValue').textContent = tech.rsi.toFixed(1);
+            if (tech.macd) document.getElementById('macdValue').textContent = tech.macd.toFixed(2);
+            if (tech.bb_position) document.getElementById('bbValue').textContent = (tech.bb_position * 100).toFixed(0) + '%';
+            if (tech.volume_ratio) document.getElementById('volumeValue').textContent = tech.volume_ratio.toFixed(1) + 'x';
+
+            // 更新交易记录
+            if (trades.trade_history && trades.trade_history.length > 0) {
+                const tbody = document.getElementById('tradeHistory');
+                tbody.innerHTML = trades.trade_history.slice().reverse().map(t => {
+                    const typeClass = t.type.includes('LONG') ? 'text-green-600' : 'text-red-600';
+                    const pnl = t.pnl || 0;
+                    const pnlText = 'pnl' in t ? `$${pnl.toFixed(2)}` : '-';
+                    const pnlClass = pnl > 0 ? 'text-green-600 font-medium' : pnl < 0 ? 'text-red-600 font-medium' : 'text-gray-700';
+                    const balance = t.balance || 0;
+                    
+                    const entryPrice = t.entry_price || t.price || '-';
+                    const exitPrice = t.exit_price || '-';
+                    
+                    return `
+                        <tr class="border-b border-gray-100 hover:bg-gray-50">
+                            <td class="py-2 text-gray-600">${t.timestamp.split(' ')[1]}</td>
+                            <td class="py-2 font-medium ${typeClass}">${t.type}</td>
+                            <td class="py-2 mono">${entryPrice !== '-' ? '$' + entryPrice.toFixed(2) : '-'}</td>
+                            <td class="py-2 mono">${exitPrice !== '-' ? '$' + exitPrice.toFixed(2) : '-'}</td>
+                            <td class="py-2 mono">${t.amount || '-'}</td>
+                            <td class="py-2 mono ${pnlClass}">${pnlText}</td>
+                            <td class="py-2 mono">${balance > 0 ? '$' + balance.toFixed(2) : '-'}</td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            // 更新统计数据
+            document.getElementById('totalTrades').textContent = trades.total_trades || 0;
+            document.getElementById('winRate').textContent = (trades.win_rate || 0).toFixed(1) + '%';
+            const totalPnlEl = document.getElementById('totalPnl');
+            const totalPnl = trades.total_pnl || 0;
+            totalPnlEl.textContent = `$${totalPnl.toFixed(2)}`;
+            totalPnlEl.className = `font-medium ${totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`;
+
+            // 更新配置
+            document.getElementById('configInfo').innerHTML = `
+                <div class="flex justify-between py-1.5 border-b border-gray-100">
+                    <span class="text-gray-500">交易对</span>
+                    <span class="font-medium">${config.symbol}</span>
+                </div>
+                <div class="flex justify-between py-1.5 border-b border-gray-100">
+                    <span class="text-gray-500">数量</span>
+                    <span class="font-medium">${config.amount} BTC</span>
+                </div>
+                <div class="flex justify-between py-1.5 border-b border-gray-100">
+                    <span class="text-gray-500">杠杆</span>
+                    <span class="font-medium">${config.leverage}x</span>
+                </div>
+                <div class="flex justify-between py-1.5 border-b border-gray-100">
+                    <span class="text-gray-500">周期</span>
+                    <span class="font-medium">${config.timeframe}</span>
+                </div>
+                <div class="flex justify-between py-1.5">
+                    <span class="text-gray-500">模式</span>
+                    <span class="font-medium ${config.test_mode ? 'text-yellow-600' : 'text-red-600'}">${config.test_mode ? '模拟' : '实盘'}</span>
+                </div>
+            `;
+            
+            // 更新右下角模型显示
+            if (config.model) {
+                document.getElementById('modelName').textContent = config.model;
+            }
+        }
+
+        async function toggleBot() {
+            showPasswordModal();
+        }
+        
+        let pendingAction = null;
+        
+        function showPasswordModal() {
+            document.getElementById('passwordModal').classList.remove('hidden');
+            document.getElementById('passwordModal').classList.add('flex');
+            document.getElementById('passwordInput').value = '';
+            document.getElementById('passwordInput').focus();
+        }
+        
+        function closePasswordModal() {
+            document.getElementById('passwordModal').classList.add('hidden');
+            document.getElementById('passwordModal').classList.remove('flex');
+        }
+        
+        async function confirmPassword() {
+            const password = document.getElementById('passwordInput').value;
+            if (!password) {
+                alert('请输入密码');
+                return;
+            }
+            
+            closePasswordModal();
+            
+            try {
+                const endpoint = isRunning ? '/api/stop' : '/api/start';
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ password })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    isRunning = !isRunning;
+                    if (!isRunning) {
+                        klineData = [];
+                        drawKlineChart();
+                    }
+                    setTimeout(fetchData, 1000);
+                } else {
+                    alert(data.message || '操作失败');
+                }
+            } catch (error) {
+                console.error('Toggle error:', error);
+                alert('操作失败');
+            }
+        }
+        
+        document.getElementById('passwordInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                confirmPassword();
+            }
+        });
+
+        // 窗口大小变化时重绘
+        window.addEventListener('resize', () => {
+            drawKlineChart();
+        });
+
+        fetchData();
+        setInterval(fetchData, 1000);
+    </script>
+</body>
+</html>
