@@ -9,8 +9,17 @@ import json
 import re
 from dotenv import load_dotenv
 import logging
+from config import Config
 
 load_dotenv()
+
+# 从配置中读取仓位相关参数
+MAX_POSITIONS = Config.MAX_POSITIONS
+RSI_OVERSOLD_THRESHOLD = Config.RSI_OVERSOLD_THRESHOLD
+RSI_OVERBOUGHT_THRESHOLD = Config.RSI_OVERBOUGHT_THRESHOLD
+MAX_SAME_DIRECTION_POSITIONS = Config.MAX_SAME_DIRECTION_POSITIONS
+STOP_LOSS_PERCENT = Config.STOP_LOSS_PERCENT
+TAKE_PROFIT_PERCENT = Config.TAKE_PROFIT_PERCENT
 
 # 配置AI日志
 ai_logger = logging.getLogger('ai')
@@ -335,6 +344,10 @@ def create_fallback_signal(price_data):
 def analyze_with_deepseek(price_data):
     """使用AI分析市场并生成交易信号（完整版）"""
     
+    # 获取当前策略模式
+    strategy_mode = Config.STRATEGY_MODE
+    rsi_oversold, rsi_overbought = Config.get_rsi_thresholds()
+    
     # 构建完整的K线数据
     klines = price_data['kline_data'][-8:]
     kline_text = "【最近8根K线数据】\n"
@@ -366,7 +379,7 @@ def analyze_with_deepseek(price_data):
 - RSI(14): {tech.get('rsi', 0):.2f} {'⚠️超买' if tech.get('rsi', 0) > 70 else '⚠️超卖' if tech.get('rsi', 0) < 30 else '✅正常'}
 - MACD: {tech.get('macd', 0):.4f}
 - 信号线: {tech.get('macd_signal', 0):.4f}
-- 柱状图: {tech.get('macd_histogram', 0):.4f} {'✅多头' if tech.get('macd_histogram', 0) > 0 else '❌空头'}
+- 柱状图: {tech.get('macd_histogram', 0):.4f} {'✅看涨' if tech.get('macd_histogram', 0) > 0 else '❌看跌'}
 
 🎚️ 布林带:
 - 上轨: ${tech.get('bb_upper', 0):,.2f}
@@ -383,12 +396,85 @@ def analyze_with_deepseek(price_data):
 - 均量: {tech.get('volume_ma', price_data['volume']):.2f} BTC
 - 量比: {tech.get('volume_ratio', 1):.2f}x {'📈放量' if tech.get('volume_ratio', 1) > 1.5 else '📉缩量' if tech.get('volume_ratio', 1) < 0.7 else '✅正常'}"""
     
-    # 持仓信息
+    # 持仓信息 - 增强版，支持多仓
     current_pos = get_current_position()
     pos_text = "无持仓"
+    position_count = 0
+    long_count = 0
+    short_count = 0
+    total_unrealized_pnl = 0
+    account_balance = 10000
+    
     if current_pos:
         pnl = current_pos['unrealized_pnl']
         pos_text = f"{current_pos['side']}仓 | 数量: {current_pos['size']} BTC | 入场价: ${current_pos['entry_price']:,.2f} | 盈亏: ${pnl:,.2f}"
+        position_count = 1
+        if current_pos['side'] == 'long':
+            long_count = 1
+        else:
+            short_count = 1
+        total_unrealized_pnl = pnl
+    
+    # 多仓位详细信息（从web_app获取）
+    try:
+        from web_app import simulated_account
+        account_balance = simulated_account.get('balance', 10000)
+        if simulated_account.get('positions'):
+            positions = simulated_account['positions']
+            position_count = len(positions)
+            long_count = len([p for p in positions if p['side'] == 'long'])
+            short_count = len([p for p in positions if p['side'] == 'short'])
+            
+            pos_text = f"共{position_count}个仓位 (多仓{long_count}个, 空仓{short_count}个)\n"
+            total_unrealized_pnl = 0
+            
+            for i, pos in enumerate(positions):
+                if pos['side'] == 'long':
+                    pnl = (price_data['price'] - pos['entry_price']) * pos['amount']
+                else:
+                    pnl = (pos['entry_price'] - price_data['price']) * pos['amount']
+                total_unrealized_pnl += pnl
+                pnl_percent = pnl / (pos['entry_price'] * pos['amount']) * 100
+                pos_text += f"  [{i+1}] {pos['side']}仓: 入场${pos['entry_price']:,.2f} | 数量{pos['amount']} | 盈亏${pnl:,.2f} ({pnl_percent:+.2f}%)\n"
+            
+            pos_text += f"总未实现盈亏: ${total_unrealized_pnl:,.2f}"
+    except:
+        pass
+    
+    # 最近交易记录（从web_app获取）
+    trades_text = "暂无交易记录"
+    total_pnl = 0
+    win_count = 0
+    loss_count = 0
+    win_rate = 0
+    
+    try:
+        from web_app import simulated_account
+        trades = simulated_account.get('trades', [])
+        total_pnl = simulated_account.get('total_pnl', 0)
+        win_count = simulated_account.get('win_count', 0)
+        loss_count = simulated_account.get('loss_count', 0)
+        
+        if win_count + loss_count > 0:
+            win_rate = (win_count / (win_count + loss_count)) * 100
+        
+        if trades:
+            recent_trades = trades[-10:]  # 最近10笔交易
+            trades_text = f"最近{len(recent_trades)}笔交易:\n"
+            
+            for trade in recent_trades:
+                timestamp = trade.get('timestamp', '').split(' ')[1] if ' ' in trade.get('timestamp', '') else trade.get('timestamp', '')
+                trade_type = trade.get('type', 'N/A')
+                pnl = trade.get('pnl', 0)
+                balance = trade.get('balance', 0)
+                
+                if 'pnl' in trade:
+                    trades_text += f"  [{timestamp}] {trade_type} | 盈亏${pnl:+.2f} | 余额${balance:.2f}\n"
+                else:
+                    price = trade.get('price', 0)
+                    trades_text += f"  [{timestamp}] {trade_type} | 价格${price:.2f}\n"
+    except:
+        pass
     
     # 上次信号
     last_signal_text = ""
@@ -396,7 +482,84 @@ def analyze_with_deepseek(price_data):
         last = signal_history[-1]
         last_signal_text = f"\n【上次交易信号】\n信号: {last.get('signal')} | 信心: {last.get('confidence')} | 时间: {last.get('timestamp')}"
     
-    prompt = f"""你是专业的BTC量化交易分析师。请基于以下完整数据进行深度分析：
+    # 根据策略模式生成不同的提示词
+    if strategy_mode == 'aggressive':
+        strategy_prompt = f"""你是激进的BTC量化交易专家。请基于以下数据进行快速果断的分析：
+
+🎯 激进策略特点：
+- 更频繁的交易信号，抓住短期机会
+- RSI阈值：超卖<{rsi_oversold}，超买>{rsi_overbought}
+- 允许更高的风险容忍度
+- 追求更高的收益潜力
+
+【智能交易策略 - 激进模式】
+1. 🎯 快速入场: 抓住短期波动机会，不过度犹豫
+2. 🎯 宽松门槛:
+   - RSI > {rsi_overbought} 考虑做空
+   - RSI < {rsi_oversold} 考虑做多
+   - 单一指标确认即可触发交易
+3. 🎯 趋势跟随: 顺势交易，及时止盈
+4. 🎯 高频交易: 增加交易频率，捕捉更多机会
+5. 🎯 灵活止损: 止损{STOP_LOSS_PERCENT}%，止盈{TAKE_PROFIT_PERCENT}%
+6. 🎯 仓位激进: 允许同方向{MAX_SAME_DIRECTION_POSITIONS}个仓位
+
+【决策要求】
+- 可以给出更频繁的BUY或SELL信号
+- 信心等级MEDIUM也可考虑交易
+- 允许较快的仓位转换
+- 趋势明确时果断入场"""
+    elif strategy_mode == 'conservative':
+        strategy_prompt = f"""你是保守的BTC量化交易专家。请基于以下数据进行谨慎稳健的分析：
+
+🛡️ 保守策略特点：
+- 更少的交易信号，避免频繁操作
+- RSI阈值：超卖<{rsi_oversold}，超买>{rsi_overbought}
+- 严格的风险控制
+- 追求稳定的收益
+
+【智能交易策略 - 保守模式】
+1. 🎯 谨慎入场: 只在非常明确的信号时入场
+2. 🎯 严格门槛:
+   - RSI > {rsi_overbought} 才考虑做空（需要多重确认）
+   - RSI < {rsi_oversold} 才考虑做多（需要多重确认）
+   - 至少3个指标同时确认才触发交易
+3. 🎯 趋势确认: 等待趋势完全确认后再入场
+4. 🎯 低频交易: 减少交易频率，提高交易质量
+5. 🎯 严格止损: 止损{STOP_LOSS_PERCENT}%，止盈{TAKE_PROFIT_PERCENT}%
+6. 🎯 仓位保守: 同方向最多{MAX_SAME_DIRECTION_POSITIONS}个仓位
+
+【决策要求】
+- 优先给出HOLD信号，只有在非常明确机会时才交易
+- 信心等级必须为HIGH才建议交易
+- 严格避免频繁交易，等待最佳时机
+- 趋势不明确时，坚决HOLD"""
+    else:  # standard
+        strategy_prompt = f"""你是专业的BTC量化交易专家。请基于以下数据进行平衡理性的分析：
+
+⚖️ 标准策略特点：
+- 平衡的交易频率，兼顾机会和风险
+- RSI阈值：超卖<{rsi_oversold}，超买>{rsi_overbought}
+- 适中的风险控制
+- 追求稳定的收益增长
+
+【智能交易策略 - 标准模式】
+1. 🎯 精准入场: 只在明确信号时入场，避免频繁交易
+2. 🎯 合理门槛:
+   - RSI > {rsi_overbought} 才考虑做空（需要更强信号）
+   - RSI < {rsi_oversold} 才考虑做多（需要更强信号）
+   - 至少2个指标同时确认才触发交易
+3. 🎯 趋势优先: 顺势交易，逆势观望
+4. 🎯 稳健交易: 减少交易频率，提高交易质量
+5. 🎯 平衡止损: 止损{STOP_LOSS_PERCENT}%，止盈{TAKE_PROFIT_PERCENT}%
+6. 🎯 仓位管理: 同方向最多{MAX_SAME_DIRECTION_POSITIONS}个仓位
+
+【决策要求】
+- 优先给出HOLD信号，只有在明确机会时才给出BUY或SELL
+- 信心等级必须为HIGH才建议交易，MEDIUM和LOW建议持有
+- 严格避免频繁交易，同一方向信号至少间隔3根K线
+- 趋势不明确时，坚决HOLD，不勉强交易"""
+    
+    prompt = f"""{strategy_prompt}
 
 {kline_text}
 
@@ -408,31 +571,72 @@ def analyze_with_deepseek(price_data):
 - 本K线: 最高 ${price_data['high']:,.2f} | 最低 ${price_data['low']:,.2f} | 收盘 ${price_data['price']:,.2f}
 - 价格变化: {price_data['price_change']:+.2f}%
 - 成交量: {price_data['volume']:.2f} BTC
-- 当前持仓: {pos_text}
+
+【当前持仓详情】
+{pos_text}
+
+【账户信息】
+- 可用余额: ${account_balance:,.2f}
+- 最大持仓数: {MAX_POSITIONS}
+- 当前持仓数: {position_count}/{MAX_POSITIONS} (多仓{long_count}个, 空仓{short_count}个)
+- 未实现盈亏: ${total_unrealized_pnl:,.2f}
+
+【交易统计】
+- 已实现盈亏: ${total_pnl:,.2f}
+- 交易次数: {win_count + loss_count}笔
+- 胜率: {win_rate:.1f}% (胜{win_count}负{loss_count})
+
+【最近交易记录】
+{trades_text}
 {last_signal_text}
 
-【交易决策规则】
-1. ✅ 趋势跟随: 顺势交易，避免逆势
-2. ✅ 多指标共振: 至少2-3个指标同向确认
-3. ✅ 风险管理: 
-   - RSI > 70 谨慎做多
-   - RSI < 30 谨慎做空
-   - 价格触及布林带上轨慎买，下轨慎卖
-4. ✅ 成交量确认: 放量突破可信度高
-5. ✅ BTC特性: 长期看涨，做多机会可适当放宽
-6. ✅ 持仓控制: 
-   - 有持仓时需更强信号才反向
-   - 避免频繁开平仓
+【智能交易策略 - 多仓模式】
+1. 🎯 精准入场: 只在明确信号时入场，避免频繁交易
+2. 🎯 合理门槛:
+   - RSI > {RSI_OVERBOUGHT_THRESHOLD} 才考虑做空（需要更强信号）
+   - RSI < {RSI_OVERSOLD_THRESHOLD} 才考虑做多（需要更强信号）
+   - 至少2个指标同时确认才触发交易
+3. 🎯 趋势优先: 顺势交易，逆势观望
+4. 🎯 稳健交易: 减少交易频率，提高交易质量
+5. 🎯 BTC特性: 偏向做多，但需要明确支撑位
+6. 🎯 多仓策略:
+   - 允许同时持有最多{MAX_POSITIONS}个仓位
+   - BUY信号会平掉所有空仓，然后开多仓
+   - SELL信号会平掉所有多仓，然后开空仓
+   - 同方向可以加仓（最多{MAX_POSITIONS}个）
+7. 🎯 止损止盈:
+   - 止损: {STOP_LOSS_PERCENT}%
+   - 止盈: {TAKE_PROFIT_PERCENT}%
+   - 盈亏比至少 2:1
+8. 🎯 仓位管理:
+   - 当前持仓数: {position_count}/{MAX_POSITIONS} (多仓{long_count}个, 空仓{short_count}个)
+   - 多仓: {long_count}个 | 空仓: {short_count}个
+   - 未实现盈亏: ${total_unrealized_pnl:,.2f}
 
-【分析要求】
-请综合以上所有数据进行全面分析，给出明确的交易信号和详细的理由说明。
+【决策要求】
+- 优先给出HOLD信号，只有在明确机会时才给出BUY或SELL
+- 信心等级必须为HIGH才建议交易，MEDIUM和LOW建议持有
+- 严格避免频繁交易，同一方向信号至少间隔3根K线
+- 考虑当前持仓情况，避免过度持仓
+- 如果已有同方向仓位，除非有强烈加仓信号，否则保持HOLD
+- 如果有反向仓位，必须先平仓再开新仓
+- 当前价格必须距离入场价超过2%才考虑反向操作
+- 趋势不明确时，坚决HOLD，不勉强交易
+
+【仓位管理规则】
+- 最大持仓数: {MAX_POSITIONS}个
+- 当前持仓数: {position_count}/{MAX_POSITIONS} (多仓{long_count}个, 空仓{short_count}个)
+- 同方向最大持仓: {MAX_SAME_DIRECTION_POSITIONS}个（避免过度集中）
+- 如果已持有{MAX_SAME_DIRECTION_POSITIONS}个多仓，即使有BUY信号也应HOLD
+- 如果已持有{MAX_SAME_DIRECTION_POSITIONS}个空仓，即使有SELL信号也应HOLD
+- 只有在持仓数少于{MAX_SAME_DIRECTION_POSITIONS}个时，才考虑加仓
 
 请严格按以下JSON格式回复（不要有任何多余文字）:
 {{
     "signal": "BUY或SELL或HOLD",
-    "reason": "详细分析理由（包含：趋势判断、技术指标依据、支撑阻力分析、成交量情况）",
-    "stop_loss": 具体止损价格,
-    "take_profit": 具体止盈价格,
+    "reason": "简明分析理由（趋势+关键指标）",
+    "stop_loss": 具体止损价格（1.5-2%）,
+    "take_profit": 具体止盈价格（3-5%）,
     "confidence": "HIGH或MEDIUM或LOW"
 }}"""
 
@@ -526,27 +730,53 @@ def execute_trade(signal_data, price_data):
         # 如果只是方向反转，需要高信心才执行
         if new_side != current_side:
             if signal_data['confidence'] != 'HIGH':
-                print(f"🔒 非高信心反转信号，保持现有{current_side}仓")
+                print(f"🔒 非高信心反转信号，保持现有{'多仓' if current_side == 'long' else '空仓'}")
                 return
 
             # 检查最近信号历史，避免频繁反转
             if len(signal_history) >= 2:
                 last_signals = [s['signal'] for s in signal_history[-2:]]
                 if signal_data['signal'] in last_signals:
-                    print(f"🔒 近期已出现{signal_data['signal']}信号，避免频繁反转")
+                    signal_text = {'BUY': '买入', 'SELL': '卖出', 'HOLD': '持有'}
+                    print(f"🔒 近期已出现{signal_text.get(signal_data['signal'], signal_data['signal'])}信号，避免频繁反转")
                     return
 
-    print(f"交易信号: {signal_data['signal']}")
-    print(f"信心程度: {signal_data['confidence']}")
+    signal_text = {'BUY': '买入', 'SELL': '卖出', 'HOLD': '持有'}
+    confidence_text = {'HIGH': '高', 'MEDIUM': '中', 'LOW': '低'}
+    print(f"交易信号: {signal_text.get(signal_data['signal'], signal_data['signal'])}")
+    print(f"信心程度: {confidence_text.get(signal_data['confidence'], signal_data['confidence'])}")
     print(f"理由: {signal_data['reason']}")
     print(f"止损: ${signal_data['stop_loss']:,.2f}")
     print(f"止盈: ${signal_data['take_profit']:,.2f}")
     print(f"当前持仓: {current_position}")
 
-    # 风险管理：低信心信号不执行
-    if signal_data['confidence'] == 'LOW' and not TRADE_CONFIG['test_mode']:
-        print("⚠️ 低信心信号，跳过执行")
+    # 风险管理：只有HIGH信心信号才执行交易
+    if signal_data['confidence'] != 'HIGH':
+        confidence_text = {'HIGH': '高', 'MEDIUM': '中', 'LOW': '低'}
+        print(f"⚠️ {confidence_text.get(signal_data['confidence'], signal_data['confidence'])}信心信号，跳过执行（仅HIGH信心才交易）")
         return
+
+    # 检查是否有持仓，避免频繁操作
+    if current_position:
+        current_side = current_position['side']
+        entry_price = current_position['entry_price']
+        current_price = price_data['price']
+        
+        # 计算当前盈亏百分比
+        if current_side == 'long':
+            pnl_percent = (current_price - entry_price) / entry_price * 100
+        else:
+            pnl_percent = (entry_price - current_price) / entry_price * 100
+        
+        # 如果当前持仓盈利超过1%，保持持仓不动
+        if pnl_percent > 1.0:
+            print(f"🔒 当前持仓盈利{pnl_percent:.2f}%，保持持仓")
+            return
+        
+        # 如果当前持仓亏损但未到止损，需要更强信号才反向
+        if pnl_percent < -0.5 and signal_data['confidence'] != 'HIGH':
+            print(f"🔒 当前持仓亏损{pnl_percent:.2f}%，需要HIGH信心才反向操作")
+            return
 
     if TRADE_CONFIG['test_mode']:
         print("测试模式 - 仅模拟交易")
@@ -582,7 +812,7 @@ def execute_trade(signal_data, price_data):
                     params={'tag': 'f1ee03b510d5SUDE'}
                 )
             elif current_position and current_position['side'] == 'long':
-                print("已有多头持仓，保持现状")
+                print("已有多仓持仓，保持现状")
             else:
                 # 无持仓时开多仓
                 print("开多仓...")
@@ -612,7 +842,7 @@ def execute_trade(signal_data, price_data):
                     params={'tag': 'f1ee03b510d5SUDE'}
                 )
             elif current_position and current_position['side'] == 'short':
-                print("已有空头持仓，保持现状")
+                print("已有空仓持仓，保持现状")
             else:
                 # 无持仓时开空仓
                 print("开空仓...")
@@ -659,7 +889,7 @@ def wait_for_next_period():
     timeframe = TRADE_CONFIG['timeframe']
     
     # 解析时间周期
-    timeframe_minutes = {'1m': 1, '5m': 5, '12m': 12, '15m': 15, '30m': 30, '1h': 60}
+    timeframe_minutes = {'1m': 1, '2m': 2, '5m': 5, '12m': 12, '15m': 15, '30m': 30, '1h': 60}
     period_minutes = timeframe_minutes.get(timeframe, 1)
     
     now = datetime.now()

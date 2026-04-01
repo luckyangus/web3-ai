@@ -120,9 +120,15 @@
 
                 <!-- 当前信号 -->
                 <div class="mb-4 pb-4 border-b border-gray-200">
-                    <h3 class="text-xs font-semibold text-gray-500 mb-3 uppercase">当前信号</h3>
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-xs font-semibold text-gray-500 uppercase">当前信号</h3>
+                        <div class="flex items-center gap-1 text-xs text-gray-500">
+                            <span>下次决策:</span>
+                            <span id="countdown" class="mono font-medium text-blue-600">--:--</span>
+                        </div>
+                    </div>
                     <div class="flex items-center justify-between mb-2">
-                        <span id="signalType" class="text-3xl font-bold">HOLD</span>
+                        <span id="signalType" class="text-3xl font-bold">持有</span>
                         <span id="signalConfidence" class="text-xs px-2 py-1 rounded bg-gray-200">-</span>
                     </div>
                     <p id="signalReason" class="text-xs text-gray-600 mt-2">等待分析...</p>
@@ -130,28 +136,12 @@
 
                 <!-- 持仓信息 -->
                 <div class="mb-4 pb-4 border-b border-gray-200">
-                    <h3 class="text-xs font-semibold text-gray-500 mb-3 uppercase">持仓</h3>
-                    <div class="space-y-2">
-                        <div class="flex justify-between items-center">
-                            <span class="text-xs text-gray-600">方向</span>
-                            <span id="positionInfo" class="text-sm font-medium">无持仓</span>
-                        </div>
-                        <div class="flex justify-between items-center">
-                            <span class="text-xs text-gray-600">入场价</span>
-                            <span id="entryPrice" class="mono text-sm">-</span>
-                        </div>
-                        <div class="flex justify-between items-center">
-                            <span class="text-xs text-gray-600">数量</span>
-                            <span id="positionAmount" class="mono text-sm">-</span>
-                        </div>
-                        <div class="flex justify-between items-center">
-                            <span class="text-xs text-gray-600">持仓成本</span>
-                            <span id="positionCost" class="mono text-sm font-medium">-</span>
-                        </div>
-                        <div class="flex justify-between items-center">
-                            <span class="text-xs text-gray-600">保证金</span>
-                            <span id="margin" class="mono text-sm">-</span>
-                        </div>
+                    <div class="flex justify-between items-center mb-3">
+                        <h3 class="text-xs font-semibold text-gray-500 uppercase">持仓</h3>
+                        <span id="positionCount" class="text-xs text-gray-500">0/3</span>
+                    </div>
+                    <div id="positionsList" class="space-y-3">
+                        <div class="text-xs text-gray-400 text-center py-2">无持仓</div>
                     </div>
                 </div>
 
@@ -183,6 +173,29 @@
                     <h3 class="text-xs font-semibold text-gray-500 mb-3 uppercase">配置</h3>
                     <div id="configInfo" class="space-y-2 text-xs">
                         <p class="text-gray-400">加载中...</p>
+                    </div>
+                </div>
+
+                <!-- 策略模式 -->
+                <div class="mt-4 pt-4 border-t border-gray-200">
+                    <h3 class="text-xs font-semibold text-gray-500 mb-3 uppercase">策略模式</h3>
+                    <div class="space-y-2">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs text-gray-600">当前模式</span>
+                            <span id="currentStrategy" class="text-xs font-medium">标准模式</span>
+                        </div>
+                        <div class="flex gap-1">
+                            <button onclick="setStrategy('aggressive')" class="flex-1 px-2 py-1.5 text-xs rounded bg-red-100 text-red-700 hover:bg-red-200 transition-colors">
+                                激进
+                            </button>
+                            <button onclick="setStrategy('standard')" class="flex-1 px-2 py-1.5 text-xs rounded bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors">
+                                标准
+                            </button>
+                            <button onclick="setStrategy('conservative')" class="flex-1 px-2 py-1.5 text-xs rounded bg-green-100 text-green-700 hover:bg-green-200 transition-colors">
+                                保守
+                            </button>
+                        </div>
+                        <p id="strategyDescription" class="text-xs text-gray-500 mt-2"></p>
                     </div>
                 </div>
             </div>
@@ -476,6 +489,45 @@
         let decisionData = [];
         let decisionPage = 1;
         const decisionPageSize = 10;
+        let countdownInterval = null;
+        let decisionInterval = 15; // 默认15分钟，会从后端获取
+        
+        // 更新倒计时
+        function updateCountdown() {
+            const now = new Date();
+            const currentMinute = now.getMinutes();
+            const currentSecond = now.getSeconds();
+            
+            // 计算下次决策时间
+            let nextDecisionMinute;
+            if (currentMinute % decisionInterval === 0 && currentSecond < 5) {
+                // 当前在执行窗口内，下次是decisionInterval分钟后
+                nextDecisionMinute = currentMinute + decisionInterval;
+            } else {
+                // 计算到下一个整数倍decisionInterval分钟的时间
+                nextDecisionMinute = Math.ceil(currentMinute / decisionInterval) * decisionInterval;
+            }
+            
+            // 计算剩余秒数
+            let remainingSeconds = (nextDecisionMinute - currentMinute) * 60 - currentSecond;
+            if (remainingSeconds <= 0) {
+                remainingSeconds += decisionInterval * 60;
+            }
+            
+            // 格式化显示
+            const displayMinutes = Math.floor(remainingSeconds / 60);
+            const displaySeconds = remainingSeconds % 60;
+            
+            // 更新显示
+            const countdownEl = document.getElementById('countdown');
+            if (isRunning) {
+                countdownEl.textContent = `${displayMinutes.toString().padStart(2, '0')}:${displaySeconds.toString().padStart(2, '0')}`;
+                countdownEl.className = 'mono font-medium text-blue-600';
+            } else {
+                countdownEl.textContent = '--:--';
+                countdownEl.className = 'mono font-medium text-gray-400';
+            }
+        }
         
         function showDecisionModal() {
             document.getElementById('decisionModal').classList.remove('hidden');
@@ -506,7 +558,9 @@
             const totalPages = Math.ceil(total / decisionPageSize) || 1;
             const startIdx = (decisionPage - 1) * decisionPageSize;
             const endIdx = Math.min(startIdx + decisionPageSize, total);
-            const pageData = decisionData.slice(startIdx, endIdx);
+            // 反转数组顺序，让最新时间的记录显示在最上面
+            const reversedData = [...decisionData].reverse();
+            const pageData = reversedData.slice(startIdx, endIdx);
             
             document.getElementById('totalDecisions').textContent = total;
             document.getElementById('currentPage').textContent = decisionPage;
@@ -520,6 +574,10 @@
                 return;
             }
             
+            // 信号和信心等级中文映射
+            const signalText = { 'BUY': '买入', 'SELL': '卖出', 'HOLD': '持有' };
+            const confidenceText = { 'HIGH': '高', 'MEDIUM': '中', 'LOW': '低' };
+            
             const html = pageData.map((item, idx) => {
                 const signalColor = item.signal === 'BUY' ? 'bg-green-100 text-green-700' : item.signal === 'SELL' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700';
                 const confColor = item.confidence === 'HIGH' ? 'bg-green-100 text-green-700' : item.confidence === 'MEDIUM' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-700';
@@ -529,8 +587,8 @@
                         <div class="flex items-center justify-between mb-3">
                             <div class="flex items-center gap-3">
                                 <span class="text-sm text-gray-500">${item.timestamp || '-'}</span>
-                                <span class="px-2 py-1 rounded text-sm font-medium ${signalColor}">${item.signal || '-'}</span>
-                                <span class="px-2 py-1 rounded text-xs ${confColor}">${item.confidence || '-'}</span>
+                                <span class="px-2 py-1 rounded text-sm font-medium ${signalColor}">${signalText[item.signal] || item.signal || '-'}</span>
+                                <span class="px-2 py-1 rounded text-xs ${confColor}">${confidenceText[item.confidence] || item.confidence || '-'}</span>
                             </div>
                             <span class="text-xs text-gray-400">#${total - startIdx - idx}</span>
                         </div>
@@ -576,6 +634,11 @@
                 const signals = await signalsRes.json();
                 const config = await configRes.json();
                 const trades = await tradesRes.json();
+
+                // 更新决策间隔
+                if (config.decision_interval) {
+                    decisionInterval = config.decision_interval;
+                }
 
                 updateUI(status, market, position, signals, config, trades);
             } catch (error) {
@@ -630,33 +693,59 @@
             document.getElementById('realizedPnl').textContent = `$${realizedPnl.toFixed(2)}`;
             document.getElementById('realizedPnl').className = `mono text-sm font-semibold ${realizedPnl >= 0 ? 'text-green-600' : 'text-red-600'}`;
 
-            // 更新持仓信息
-            if (position.position) {
-                const sideText = position.position.side === 'long' ? '多仓' : '空仓';
-                document.getElementById('positionInfo').textContent = sideText;
-                document.getElementById('positionInfo').className = `text-sm font-medium ${position.position.side === 'long' ? 'text-green-600' : 'text-red-600'}`;
+            // 更新持仓信息 - 支持多仓位
+            const positionsList = document.getElementById('positionsList');
+            const positionCount = document.getElementById('positionCount');
+            const maxPos = config.max_positions || 3;
+            
+            if (position.positions && position.positions.length > 0) {
+                positionCount.textContent = `${position.positions.length}/${maxPos}`;
                 
-                document.getElementById('entryPrice').textContent = `$${position.position.entry_price.toFixed(2)}`;
-                document.getElementById('positionAmount').textContent = position.position.size;
-                
-                const positionCost = position.position.entry_price * position.position.size;
-                document.getElementById('positionCost').textContent = `$${positionCost.toFixed(2)}`;
-                
-                document.getElementById('margin').textContent = `$${position.position.margin.toFixed(2)}`;
+                positionsList.innerHTML = position.positions.map((pos, index) => {
+                    const sideText = pos.side === 'long' ? '多仓' : '空仓';
+                    const sideClass = pos.side === 'long' ? 'text-green-600' : 'text-red-600';
+                    const positionCost = pos.entry_price * pos.size;
+                    const pnl = pos.unrealized_pnl || 0;
+                    const pnlClass = pnl >= 0 ? 'text-green-600' : 'text-red-600';
+                    
+                    return `
+                        <div class="bg-gray-50 rounded p-2 space-y-1">
+                            <div class="flex justify-between items-center">
+                                <span class="text-xs text-gray-500">#${index + 1} ${sideText}</span>
+                                <span class="text-xs font-medium ${sideClass}">${sideText}</span>
+                            </div>
+                            <div class="flex justify-between items-center text-xs">
+                                <span class="text-gray-600">入场价</span>
+                                <span class="mono">$${pos.entry_price.toFixed(2)}</span>
+                            </div>
+                            <div class="flex justify-between items-center text-xs">
+                                <span class="text-gray-600">数量</span>
+                                <span class="mono">${pos.size}</span>
+                            </div>
+                            <div class="flex justify-between items-center text-xs">
+                                <span class="text-gray-600">保证金</span>
+                                <span class="mono">$${pos.margin.toFixed(2)}</span>
+                            </div>
+                            <div class="flex justify-between items-center text-xs">
+                                <span class="text-gray-600">盈亏</span>
+                                <span class="mono font-medium ${pnlClass}">$${pnl.toFixed(2)}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
             } else {
-                document.getElementById('positionInfo').textContent = '无持仓';
-                document.getElementById('positionInfo').className = 'text-sm font-medium';
-                document.getElementById('entryPrice').textContent = '-';
-                document.getElementById('positionAmount').textContent = '-';
-                document.getElementById('positionCost').textContent = '-';
-                document.getElementById('margin').textContent = '-';
+                positionCount.textContent = `0/${maxPos}`;
+                positionsList.innerHTML = '<div class="text-xs text-gray-400 text-center py-2">无持仓</div>';
             }
 
             // 更新信号
             if (signals.latest_signal) {
                 const signal = signals.latest_signal;
                 const signalType = document.getElementById('signalType');
-                signalType.textContent = signal.signal;
+                const signalText = { 'BUY': '买入', 'SELL': '卖出', 'HOLD': '持有' };
+                const confidenceText = { 'HIGH': '高', 'MEDIUM': '中', 'LOW': '低' };
+                
+                signalType.textContent = signalText[signal.signal] || signal.signal;
                 
                 const signalColor = signal.signal === 'BUY' ? 'text-green-600' : signal.signal === 'SELL' ? 'text-red-600' : 'text-yellow-600';
                 signalType.className = `text-3xl font-bold ${signalColor}`;
@@ -664,8 +753,8 @@
                 document.getElementById('signalReason').textContent = signal.reason || '-';
                 
                 const confEl = document.getElementById('signalConfidence');
-                confEl.textContent = signal.confidence || '-';
-                confEl.className = signal.confidence === 'HIGH' 
+                confEl.textContent = confidenceText[signal.confidence] || signal.confidence || '-';
+                confEl.className = signal.confidence === 'HIGH'
                     ? 'text-xs px-2 py-1 rounded bg-green-100 text-green-700'
                     : signal.confidence === 'MEDIUM'
                     ? 'text-xs px-2 py-1 rounded bg-yellow-100 text-yellow-700'
@@ -682,8 +771,20 @@
             // 更新交易记录
             if (trades.trade_history && trades.trade_history.length > 0) {
                 const tbody = document.getElementById('tradeHistory');
+                // 交易类型中文映射
+                const tradeTypeText = {
+                    '开多仓': '开多仓',
+                    '开空仓': '开空仓',
+                    '平多仓-止损': '平多仓-止损',
+                    '平多仓-止盈': '平多仓-止盈',
+                    '平空仓-止损': '平空仓-止损',
+                    '平空仓-止盈': '平空仓-止盈',
+                    '平多仓-卖出信号': '平多仓-卖出信号',
+                    '平空仓-买入信号': '平空仓-买入信号'
+                };
+                
                 tbody.innerHTML = trades.trade_history.slice().reverse().map(t => {
-                    const typeClass = t.type.includes('LONG') ? 'text-green-600' : 'text-red-600';
+                    const typeClass = t.type.includes('多仓') ? 'text-green-600' : 'text-red-600';
                     const pnl = t.pnl || 0;
                     const pnlText = 'pnl' in t ? `$${pnl.toFixed(2)}` : '-';
                     const pnlClass = pnl > 0 ? 'text-green-600 font-medium' : pnl < 0 ? 'text-red-600 font-medium' : 'text-gray-700';
@@ -715,6 +816,10 @@
             totalPnlEl.className = `font-medium ${totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`;
 
             // 更新配置
+            const maxPositions = config.max_positions || 3;
+            const stopLoss = config.stop_loss_percent || 1.5;
+            const takeProfit = config.take_profit_percent || 3.0;
+            
             document.getElementById('configInfo').innerHTML = `
                 <div class="flex justify-between py-1.5 border-b border-gray-100">
                     <span class="text-gray-500">交易对</span>
@@ -732,6 +837,18 @@
                     <span class="text-gray-500">周期</span>
                     <span class="font-medium">${config.timeframe}</span>
                 </div>
+                <div class="flex justify-between py-1.5 border-b border-gray-100">
+                    <span class="text-gray-500">最大持仓</span>
+                    <span class="font-medium">${maxPositions}个 / 同方向${config.max_same_direction_positions || 2}个</span>
+                </div>
+                <div class="flex justify-between py-1.5 border-b border-gray-100">
+                    <span class="text-gray-500">止损/止盈</span>
+                    <span class="font-medium text-red-600">-${stopLoss}%</span> / <span class="font-medium text-green-600">+${takeProfit}%</span>
+                </div>
+                <div class="flex justify-between py-1.5 border-b border-gray-100">
+                    <span class="text-gray-500">AI分析周期</span>
+                    <span class="font-medium">${config.kline_for_ai || 8}根K线 (${((config.kline_for_ai || 8) * 15)}分钟)</span>
+                </div>
                 <div class="flex justify-between py-1.5">
                     <span class="text-gray-500">模式</span>
                     <span class="font-medium ${config.test_mode ? 'text-yellow-600' : 'text-red-600'}">${config.test_mode ? '模拟' : '实盘'}</span>
@@ -742,6 +859,9 @@
             if (config.model) {
                 document.getElementById('modelName').textContent = config.model;
             }
+            
+            // 更新策略模式显示
+            updateStrategyDisplay(config);
         }
 
         async function toggleBot() {
@@ -810,6 +930,55 @@
 
         fetchData();
         setInterval(fetchData, 1000);
+        
+        // 启动倒计时
+        updateCountdown();
+        setInterval(updateCountdown, 1000);
+        
+        // 策略模式切换
+        async function setStrategy(mode) {
+            try {
+                const res = await fetch('/api/strategy', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ 
+                        password: prompt('请输入密码确认切换策略模式:'),
+                        mode: mode 
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alert(data.message);
+                    // 更新界面显示
+                    document.getElementById('currentStrategy').textContent = 
+                        mode === 'aggressive' ? '激进模式' : 
+                        mode === 'conservative' ? '保守模式' : '标准模式';
+                    document.getElementById('strategyDescription').textContent = data.strategy_description;
+                    // 重新获取配置
+                    setTimeout(fetchData, 500);
+                } else {
+                    alert(data.message || '切换失败');
+                }
+            } catch (error) {
+                console.error('Strategy update error:', error);
+                alert('切换失败');
+            }
+        }
+        
+        // 更新策略显示
+        function updateStrategyDisplay(config) {
+            if (config.strategy_mode) {
+                const modeText = {
+                    'aggressive': '激进模式',
+                    'standard': '标准模式', 
+                    'conservative': '保守模式'
+                };
+                document.getElementById('currentStrategy').textContent = modeText[config.strategy_mode] || '标准模式';
+                document.getElementById('strategyDescription').textContent = config.strategy_description || '';
+            }
+        }
     </script>
 </body>
 </html>
