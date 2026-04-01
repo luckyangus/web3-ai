@@ -208,6 +208,14 @@
         <span id="modelName" class="font-semibold text-gray-700 ml-1">-</span>
     </div>
 
+    <!-- 右下角作者信息 -->
+    <div class="fixed bottom-4 right-4 bg-white border border-gray-300 rounded-lg px-3 py-2 shadow-lg text-xs z-50">
+        <span class="text-gray-500">作者:</span>
+        <a href="https://t.me/yuzeangus" target="_blank" class="font-semibold text-blue-600 hover:text-blue-700 ml-1 transition-colors">
+            @yuzeAngus
+        </a>
+    </div>
+
     <!-- 密码输入弹窗 -->
     <div id="passwordModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
         <div class="bg-white rounded-lg p-6 w-80">
@@ -582,6 +590,9 @@
                 const signalColor = item.signal === 'BUY' ? 'bg-green-100 text-green-700' : item.signal === 'SELL' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700';
                 const confColor = item.confidence === 'HIGH' ? 'bg-green-100 text-green-700' : item.confidence === 'MEDIUM' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-700';
                 
+                const executedColor = item.executed ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700';
+                const executedText = item.executed ? '已执行' : '未执行';
+                
                 return `
                     <div class="border border-gray-200 rounded-lg mb-3 p-4 hover:shadow-md transition-shadow">
                         <div class="flex items-center justify-between mb-3">
@@ -589,12 +600,14 @@
                                 <span class="text-sm text-gray-500">${item.timestamp || '-'}</span>
                                 <span class="px-2 py-1 rounded text-sm font-medium ${signalColor}">${signalText[item.signal] || item.signal || '-'}</span>
                                 <span class="px-2 py-1 rounded text-xs ${confColor}">${confidenceText[item.confidence] || item.confidence || '-'}</span>
+                                <span class="px-2 py-1 rounded text-xs ${executedColor}">${executedText}</span>
                             </div>
                             <span class="text-xs text-gray-400">#${total - startIdx - idx}</span>
                         </div>
                         <div class="bg-gray-50 rounded p-3 text-sm text-gray-700 leading-relaxed">
                             ${item.reason || '无详细理由'}
                         </div>
+                        ${!item.executed ? `<div class="mt-2 text-xs text-red-500">原因: ${item.execute_reason || '未知'}</div>` : `<div class="mt-2 text-xs text-green-500">${item.execute_reason || ''}</div>`}
                     </div>
                 `;
             }).join('');
@@ -819,6 +832,7 @@
             const maxPositions = config.max_positions || 3;
             const stopLoss = config.stop_loss_percent || 1.5;
             const takeProfit = config.take_profit_percent || 3.0;
+            const decisionInterval = config.decision_interval || 15;
             
             document.getElementById('configInfo').innerHTML = `
                 <div class="flex justify-between py-1.5 border-b border-gray-100">
@@ -844,6 +858,10 @@
                 <div class="flex justify-between py-1.5 border-b border-gray-100">
                     <span class="text-gray-500">止损/止盈</span>
                     <span class="font-medium text-red-600">-${stopLoss}%</span> / <span class="font-medium text-green-600">+${takeProfit}%</span>
+                </div>
+                <div class="flex justify-between py-1.5 border-b border-gray-100">
+                    <span class="text-gray-500">决策间隔</span>
+                    <span class="font-medium text-blue-600">${decisionInterval}分钟</span>
                 </div>
                 <div class="flex justify-between py-1.5 border-b border-gray-100">
                     <span class="text-gray-500">AI分析周期</span>
@@ -956,6 +974,8 @@
                         mode === 'aggressive' ? '激进模式' : 
                         mode === 'conservative' ? '保守模式' : '标准模式';
                     document.getElementById('strategyDescription').textContent = data.strategy_description;
+                    // 显示新的参数
+                    console.log(`策略已切换: RSI阈值(${data.rsi_oversold_threshold}/${data.rsi_overbought_threshold}), 止损止盈(${data.stop_loss}%/${data.take_profit}%), 决策间隔(${data.decision_interval}分钟)`);
                     // 重新获取配置
                     setTimeout(fetchData, 500);
                 } else {

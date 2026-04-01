@@ -70,11 +70,10 @@ def check_stop_loss_take_profit(current_price):
         else:
             pnl_percent = (pos['entry_price'] - current_price) / pos['entry_price'] * 100
         
-        # 止损检查 -1.5%
-        if pnl_percent <= -1.5:
+        stop_loss_percent, take_profit_percent = Config.get_stop_loss_take_profit()
+        if pnl_percent <= -stop_loss_percent:
             positions_to_close.append((i, 'stop_loss', pnl_percent))
-        # 止盈检查 +3%
-        elif pnl_percent >= 3:
+        elif pnl_percent >= take_profit_percent:
             positions_to_close.append((i, 'take_profit', pnl_percent))
     
     # 执行平仓
@@ -139,48 +138,60 @@ def simulate_trade(signal_data, price_data):
     current_price = price_data['price']
     signal = signal_data.get('signal', 'HOLD')
     
-    # 先检查止损止盈
     check_stop_loss_take_profit(current_price)
     
     if signal == 'HOLD':
-        return
+        return {'executed': False, 'reason': 'HOLD信号，无需交易'}
     
-    # 风险管理：根据策略模式调整信心等级要求
     confidence = signal_data.get('confidence', 'LOW')
-    strategy_mode = os.getenv('STRATEGY_MODE', 'standard')
+    strategy_mode = Config.STRATEGY_MODE
     
-    # 激进模式允许MEDIUM信心交易，标准和保守模式需要HIGH信心
     if strategy_mode == 'aggressive':
         if confidence not in ['HIGH', 'MEDIUM']:
             confidence_text = {'HIGH': '高', 'MEDIUM': '中', 'LOW': '低'}
             program_logger.info(f"⚠️ {confidence_text.get(confidence, confidence)}信心信号，跳过执行（激进模式需要中等或高信心）")
-            return
+            return {'executed': False, 'reason': f'{confidence_text.get(confidence, confidence)}信心，激进模式需要中/高信心'}
     else:
         if confidence != 'HIGH':
             confidence_text = {'HIGH': '高', 'MEDIUM': '中', 'LOW': '低'}
             program_logger.info(f"⚠️ {confidence_text.get(confidence, confidence)}信心信号，跳过执行（标准/保守模式需要高信心）")
-            return
+            return {'executed': False, 'reason': f'{confidence_text.get(confidence, confidence)}信心，标准/保守模式需要高信心'}
     
     # 检查是否有持仓，避免频繁操作
     if simulated_account['positions']:
-        for pos in simulated_account['positions']:
+        stop_loss_percent, take_profit_percent = Config.get_stop_loss_take_profit()
+        hold_profit_threshold = take_profit_percent / 3
+        reverse_loss_threshold = -stop_loss_percent / 3
+        
+        if signal == 'BUY':
+            opposite_positions = [p for p in simulated_account['positions'] if p['side'] == 'short']
+            same_direction_positions = [p for p in simulated_account['positions'] if p['side'] == 'long']
+        else:
+            opposite_positions = [p for p in simulated_account['positions'] if p['side'] == 'long']
+            same_direction_positions = [p for p in simulated_account['positions'] if p['side'] == 'short']
+        
+        for pos in same_direction_positions:
             if pos['side'] == 'long':
                 pnl_percent = (current_price - pos['entry_price']) / pos['entry_price'] * 100
             else:
                 pnl_percent = (pos['entry_price'] - current_price) / pos['entry_price'] * 100
             
-            # 如果当前持仓盈利超过1%，保持持仓不动
-            if pnl_percent > 1.0:
-                program_logger.info(f"🔒 当前持仓盈利{pnl_percent:.2f}%，保持持仓")
-                return
+            if pnl_percent > hold_profit_threshold:
+                program_logger.info(f"🔒 同方向持仓盈利{pnl_percent:.2f}%，暂不加仓")
+                return {'executed': False, 'reason': f'同方向持仓盈利{pnl_percent:.2f}%，暂不加仓'}
+        
+        for pos in opposite_positions:
+            if pos['side'] == 'long':
+                pnl_percent = (current_price - pos['entry_price']) / pos['entry_price'] * 100
+            else:
+                pnl_percent = (pos['entry_price'] - current_price) / pos['entry_price'] * 100
             
-            # 如果当前持仓亏损但未到止损，需要更强信号才反向
-            if pnl_percent < -0.5 and confidence != 'HIGH':
-                program_logger.info(f"🔒 当前持仓亏损{pnl_percent:.2f}%，需要HIGH信心才反向操作")
-                return
+            if pnl_percent < reverse_loss_threshold and confidence != 'HIGH':
+                program_logger.info(f"🔒 反向持仓亏损{pnl_percent:.2f}%，需要HIGH信心才反向操作")
+                return {'executed': False, 'reason': f'反向持仓亏损{pnl_percent:.2f}%，需HIGH信心反向'}
     
-    amount = float(os.getenv('TRADE_AMOUNT', '0.01'))
-    leverage = float(os.getenv('TRADE_LEVERAGE', '10'))
+    amount = Config.TRADE_AMOUNT
+    leverage = Config.TRADE_LEVERAGE
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     signal_text = {'BUY': '买入', 'SELL': '卖出', 'HOLD': '持有'}
@@ -251,39 +262,31 @@ def simulate_trade(signal_data, price_data):
         if len(simulated_account['positions']) >= simulated_account['max_positions']:
             program_logger.info(f"[模拟] 已达最大持仓数 {simulated_account['max_positions']}，无法开多仓")
             program_logger.info(f"{'='*60}")
-            return
+            return {'executed': False, 'reason': f'已达最大持仓数{simulated_account["max_positions"]}，无法开多仓'}
         
-        # 检查是否已有同方向仓位，避免过度加仓
         long_positions = [p for p in simulated_account['positions'] if p['side'] == 'long']
-        if len(long_positions) >= 2:
-            program_logger.info(f"[模拟] 已有{len(long_positions)}个多仓，避免过度加仓（同方向最大2个）")
+        if len(long_positions) >= Config.MAX_SAME_DIRECTION_POSITIONS:
+            program_logger.info(f"[模拟] 已有{len(long_positions)}个多仓，避免过度加仓（同方向最大{Config.MAX_SAME_DIRECTION_POSITIONS}个）")
             program_logger.info(f"{'='*60}")
-            return
+            return {'executed': False, 'reason': f'已有{len(long_positions)}个多仓，达同方向最大{Config.MAX_SAME_DIRECTION_POSITIONS}个'}
         
-        # 检查是否有空仓，需要先平仓再开多仓
-        short_positions = [p for p in simulated_account['positions'] if p['side'] == 'short']
-        if short_positions:
-            program_logger.info(f"[模拟] 有{len(short_positions)}个空仓，需要先平仓再开多仓")
-            program_logger.info(f"{'='*60}")
-            return
-        
-        # 计算保证金
         margin = current_price * amount / leverage
         if simulated_account['balance'] < margin:
             program_logger.info(f"[模拟] 余额不足! 需要${margin:.2f}, 可用${simulated_account['balance']:.2f}")
             program_logger.info(f"{'='*60}")
-            return
+            return {'executed': False, 'reason': f'余额不足，需要${margin:.2f}，可用${simulated_account["balance"]:.2f}'}
         
         # 开多仓
         simulated_account['balance'] -= margin
+        stop_loss_percent, take_profit_percent = Config.get_stop_loss_take_profit()
         new_position = {
             'side': 'long',
             'entry_price': current_price,
             'amount': amount,
             'margin': margin,
             'timestamp': timestamp,
-            'stop_loss': signal_data.get('stop_loss', current_price * 0.985),
-            'take_profit': signal_data.get('take_profit', current_price * 1.03)
+            'stop_loss': signal_data.get('stop_loss', current_price * (1 - stop_loss_percent / 100)),
+            'take_profit': signal_data.get('take_profit', current_price * (1 + take_profit_percent / 100))
         }
         simulated_account['positions'].append(new_position)
         
@@ -300,6 +303,7 @@ def simulate_trade(signal_data, price_data):
         simulated_account['trades'].append(open_trade)
         program_logger.info(f"[模拟] 开多仓: 价格={current_price:.2f}, 数量={amount}, 保证金={margin:.2f}")
         program_logger.info(f"[模拟] 当前持仓数: {len(simulated_account['positions'])} (多仓{len([p for p in simulated_account['positions'] if p['side']=='long'])}个)")
+        return {'executed': True, 'reason': '开多仓成功'}
     
     elif signal == 'SELL':
         # 先平掉所有多仓
@@ -353,39 +357,31 @@ def simulate_trade(signal_data, price_data):
         if len(simulated_account['positions']) >= simulated_account['max_positions']:
             program_logger.info(f"[模拟] 已达最大持仓数 {simulated_account['max_positions']}，无法开空仓")
             program_logger.info(f"{'='*60}")
-            return
+            return {'executed': False, 'reason': f'已达最大持仓数{simulated_account["max_positions"]}，无法开空仓'}
         
-        # 检查是否已有同方向仓位，避免过度加仓
         short_positions = [p for p in simulated_account['positions'] if p['side'] == 'short']
-        if len(short_positions) >= 2:
-            program_logger.info(f"[模拟] 已有{len(short_positions)}个空仓，避免过度加仓（同方向最大2个）")
+        if len(short_positions) >= Config.MAX_SAME_DIRECTION_POSITIONS:
+            program_logger.info(f"[模拟] 已有{len(short_positions)}个空仓，避免过度加仓（同方向最大{Config.MAX_SAME_DIRECTION_POSITIONS}个）")
             program_logger.info(f"{'='*60}")
-            return
+            return {'executed': False, 'reason': f'已有{len(short_positions)}个空仓，达同方向最大{Config.MAX_SAME_DIRECTION_POSITIONS}个'}
         
-        # 检查是否有多仓，需要先平仓再开空仓
-        long_positions = [p for p in simulated_account['positions'] if p['side'] == 'long']
-        if long_positions:
-            program_logger.info(f"[模拟] 有{len(long_positions)}个多仓，需要先平仓再开空仓")
-            program_logger.info(f"{'='*60}")
-            return
-        
-        # 计算保证金
         margin = current_price * amount / leverage
         if simulated_account['balance'] < margin:
             program_logger.info(f"[模拟] 余额不足! 需要${margin:.2f}, 可用${simulated_account['balance']:.2f}")
             program_logger.info(f"{'='*60}")
-            return
+            return {'executed': False, 'reason': f'余额不足，需要${margin:.2f}，可用${simulated_account["balance"]:.2f}'}
         
         # 开空仓
         simulated_account['balance'] -= margin
+        stop_loss_percent, take_profit_percent = Config.get_stop_loss_take_profit()
         new_position = {
             'side': 'short',
             'entry_price': current_price,
             'amount': amount,
             'margin': margin,
             'timestamp': timestamp,
-            'stop_loss': signal_data.get('stop_loss', current_price * 1.015),
-            'take_profit': signal_data.get('take_profit', current_price * 0.97)
+            'stop_loss': signal_data.get('stop_loss', current_price * (1 + stop_loss_percent / 100)),
+            'take_profit': signal_data.get('take_profit', current_price * (1 - take_profit_percent / 100))
         }
         simulated_account['positions'].append(new_position)
         
@@ -402,6 +398,7 @@ def simulate_trade(signal_data, price_data):
         simulated_account['trades'].append(open_trade)
         program_logger.info(f"[模拟] 开空仓: 价格={current_price:.2f}, 数量={amount}, 保证金={margin:.2f}")
         program_logger.info(f"[模拟] 当前持仓数: {len(simulated_account['positions'])} (空仓{len([p for p in simulated_account['positions'] if p['side']=='short'])}个)")
+        return {'executed': True, 'reason': '开空仓成功'}
     
     program_logger.info(f"{'='*60}")
     
@@ -409,6 +406,8 @@ def simulate_trade(signal_data, price_data):
         simulated_account['trades'] = simulated_account['trades'][-200:]
     
     update_bot_data(current_price)
+    
+    return {'executed': False, 'reason': '未知信号'}
 
 
 def update_bot_data(current_price):
@@ -508,7 +507,7 @@ def run_trading_bot():
                     update_bot_data(current_price)
                     
                     # 根据配置的间隔时间执行交易分析
-                    decision_interval = Config.DECISION_INTERVAL
+                    decision_interval = Config.get_decision_interval()
                     current_minute = datetime.now().minute
                     if current_minute % decision_interval == 0 and datetime.now().second < 5:
                         program_logger.info(f"{'='*60}")
@@ -530,14 +529,24 @@ def run_trading_bot():
                         
                         if len(bot_data['signal_history']) >= 100:
                             bot_data['signal_history'].pop(0)
-                        bot_data['signal_history'].append({
+                        signal_record = {
                             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                             'signal': signal_data.get('signal'),
                             'confidence': signal_data.get('confidence'),
-                            'reason': signal_data.get('reason')
-                        })
+                            'reason': signal_data.get('reason'),
+                            'executed': False,
+                            'execute_reason': '待执行'
+                        }
+                        bot_data['signal_history'].append(signal_record)
                         
-                        simulate_trade(signal_data, price_data)
+                        execute_result = simulate_trade(signal_data, price_data)
+                        
+                        if execute_result:
+                            signal_record['executed'] = True
+                            signal_record['execute_reason'] = execute_result.get('reason', '执行成功')
+                        else:
+                            signal_record['executed'] = False
+                            signal_record['execute_reason'] = '未执行'
                         
                         time.sleep(5)
                 
@@ -567,7 +576,7 @@ def get_status():
     return jsonify({
         'status': bot_data['status'],
         'last_update': bot_data['last_update'],
-        'test_mode': os.getenv('TEST_MODE', 'true').lower() == 'true'
+        'test_mode': Config.TEST_MODE
     })
 
 
@@ -632,12 +641,12 @@ def start_bot():
     
     simulated_account = {
         'balance': 10000,
-        'positions': [],  # 支持多个仓位
+        'positions': [],
         'trades': [],
         'total_pnl': 0,
         'win_count': 0,
         'loss_count': 0,
-        'max_positions': int(os.getenv('MAX_POSITIONS', '3'))  # 从.env读取最大持仓数
+        'max_positions': Config.MAX_POSITIONS
     }
     
     price_history = []
@@ -676,22 +685,24 @@ def stop_bot():
 def get_config():
     from deepseek_ok_带指标plus版本 import TRADE_CONFIG
     rsi_oversold, rsi_overbought = Config.get_rsi_thresholds()
+    stop_loss, take_profit = Config.get_stop_loss_take_profit()
+    decision_interval = Config.get_decision_interval()
     return jsonify({
         'symbol': TRADE_CONFIG.get('symbol'),
         'amount': TRADE_CONFIG.get('amount'),
         'leverage': TRADE_CONFIG.get('leverage'),
         'timeframe': TRADE_CONFIG.get('timeframe'),
         'test_mode': TRADE_CONFIG.get('test_mode'),
-        'model': os.getenv('AI_MODEL', 'unknown'),
-        'max_positions': int(os.getenv('MAX_POSITIONS', '3')),
-        'max_same_direction_positions': int(os.getenv('MAX_SAME_DIRECTION_POSITIONS', '2')),
-        'stop_loss_percent': float(os.getenv('STOP_LOSS_PERCENT', '1.5')),
-        'take_profit_percent': float(os.getenv('TAKE_PROFIT_PERCENT', '3.0')),
+        'model': Config.AI_MODEL,
+        'max_positions': Config.MAX_POSITIONS,
+        'max_same_direction_positions': Config.MAX_SAME_DIRECTION_POSITIONS,
+        'stop_loss_percent': stop_loss,
+        'take_profit_percent': take_profit,
         'strategy_mode': Config.STRATEGY_MODE,
         'strategy_description': Config.get_strategy_description(),
         'rsi_oversold_threshold': rsi_oversold,
         'rsi_overbought_threshold': rsi_overbought,
-        'decision_interval': Config.DECISION_INTERVAL,
+        'decision_interval': decision_interval,
         'kline_for_ai': Config.KLINE_FOR_AI
     })
 
@@ -774,7 +785,11 @@ def update_strategy():
         program_logger.info(f"[新模式] {new_mode}")
         program_logger.info(f"[策略描述] {Config.get_strategy_description()}")
         rsi_oversold, rsi_overbought = Config.get_rsi_thresholds()
+        stop_loss, take_profit = Config.get_stop_loss_take_profit()
+        decision_interval = Config.get_decision_interval()
         program_logger.info(f"[RSI阈值] 超卖={rsi_oversold}, 超买={rsi_overbought}")
+        program_logger.info(f"[止损止盈] 止损={stop_loss}%, 止盈={take_profit}%")
+        program_logger.info(f"[决策间隔] {decision_interval}分钟")
         program_logger.info(f"{'='*60}")
         
     except Exception as e:
@@ -787,11 +802,12 @@ def update_strategy():
         'strategy_mode': new_mode,
         'strategy_description': Config.get_strategy_description(),
         'rsi_oversold_threshold': rsi_oversold,
-        'rsi_overbought_threshold': rsi_overbought
+        'rsi_overbought_threshold': rsi_overbought,
+        'stop_loss': stop_loss,
+        'take_profit': take_profit,
+        'decision_interval': decision_interval
     })
 
 
 if __name__ == '__main__':
-    host = os.getenv('WEB_HOST', '0.0.0.0')
-    port = int(os.getenv('WEB_PORT', 5000))
-    app.run(host=host, port=port, debug=False)
+    app.run(host=Config.WEB_HOST, port=Config.WEB_PORT, debug=False)

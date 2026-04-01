@@ -48,6 +48,17 @@ class Config:
     CONSERVATIVE_RSI_OVERSOLD = int(os.getenv('CONSERVATIVE_RSI_OVERSOLD', '45'))
     CONSERVATIVE_RSI_OVERBOUGHT = int(os.getenv('CONSERVATIVE_RSI_OVERBOUGHT', '55'))
     
+    # 不同策略模式的止损止盈配置
+    AGGRESSIVE_STOP_LOSS = float(os.getenv('AGGRESSIVE_STOP_LOSS', '2.0'))
+    AGGRESSIVE_TAKE_PROFIT = float(os.getenv('AGGRESSIVE_TAKE_PROFIT', '4.0'))
+    AGGRESSIVE_DECISION_INTERVAL = int(os.getenv('AGGRESSIVE_DECISION_INTERVAL', '10'))
+    STANDARD_STOP_LOSS = float(os.getenv('STANDARD_STOP_LOSS', '1.5'))
+    STANDARD_TAKE_PROFIT = float(os.getenv('STANDARD_TAKE_PROFIT', '3.0'))
+    STANDARD_DECISION_INTERVAL = int(os.getenv('STANDARD_DECISION_INTERVAL', '15'))
+    CONSERVATIVE_STOP_LOSS = float(os.getenv('CONSERVATIVE_STOP_LOSS', '1.0'))
+    CONSERVATIVE_TAKE_PROFIT = float(os.getenv('CONSERVATIVE_TAKE_PROFIT', '2.0'))
+    CONSERVATIVE_DECISION_INTERVAL = int(os.getenv('CONSERVATIVE_DECISION_INTERVAL', '20'))
+    
     WEB_HOST = os.getenv('WEB_HOST', '0.0.0.0')
     WEB_PORT = int(os.getenv('WEB_PORT', '5000'))
     WEB_SECRET_KEY = os.getenv('WEB_SECRET_KEY', 'dev-secret-key')
@@ -61,6 +72,26 @@ class Config:
             return cls.CONSERVATIVE_RSI_OVERSOLD, cls.CONSERVATIVE_RSI_OVERBOUGHT
         else:  # standard
             return cls.STANDARD_RSI_OVERSOLD, cls.STANDARD_RSI_OVERBOUGHT
+    
+    @classmethod
+    def get_stop_loss_take_profit(cls):
+        """根据策略模式获取止损止盈参数"""
+        if cls.STRATEGY_MODE == 'aggressive':
+            return cls.AGGRESSIVE_STOP_LOSS, cls.AGGRESSIVE_TAKE_PROFIT
+        elif cls.STRATEGY_MODE == 'conservative':
+            return cls.CONSERVATIVE_STOP_LOSS, cls.CONSERVATIVE_TAKE_PROFIT
+        else:  # standard
+            return cls.STANDARD_STOP_LOSS, cls.STANDARD_TAKE_PROFIT
+    
+    @classmethod
+    def get_decision_interval(cls):
+        """根据策略模式获取决策间隔时间"""
+        if cls.STRATEGY_MODE == 'aggressive':
+            return cls.AGGRESSIVE_DECISION_INTERVAL
+        elif cls.STRATEGY_MODE == 'conservative':
+            return cls.CONSERVATIVE_DECISION_INTERVAL
+        else:  # standard
+            return cls.STANDARD_DECISION_INTERVAL
     
     @classmethod
     def get_strategy_description(cls):
@@ -96,5 +127,9 @@ class Config:
         print(f"策略模式: {cls.STRATEGY_MODE}")
         print(f"策略描述: {cls.get_strategy_description()}")
         rsi_oversold, rsi_overbought = cls.get_rsi_thresholds()
+        stop_loss, take_profit = cls.get_stop_loss_take_profit()
+        decision_interval = cls.get_decision_interval()
         print(f"当前RSI阈值: 超卖={rsi_oversold}, 超买={rsi_overbought}")
+        print(f"当前止损止盈: 止损={stop_loss}%, 止盈={take_profit}%")
+        print(f"当前决策间隔: {decision_interval}分钟")
         print("=" * 60)
