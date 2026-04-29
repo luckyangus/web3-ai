@@ -14,7 +14,7 @@ copy .env.example .env
 
 ```env
 # AI模型配置（已预填）
-AI_API_KEY=sk-jE8zn4GmSbLwMefSMQz4j86n9xbXRMmf3K0Yo8PyV0virCAs
+AI_API_KEY=
 AI_BASE_URL=https://ai.100969.xyz/v1
 AI_MODEL=mimo-v2-omni
 
